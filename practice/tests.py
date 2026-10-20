@@ -122,6 +122,8 @@ class ToleranceTests(TestCase):
         self.assertFalse(entry.passed)
 
 
+
+
     def test_failed_ctq_freezes_inspection(self):
         self.field.is_ctq = True
         self.field.save()
@@ -131,8 +133,54 @@ class ToleranceTests(TestCase):
             inspection_field=self.field,
             gauge=self.gauge,
             measured_value=Decimal("24.979"),
-    )
-        entry.full_clean()
+        )
+        entry.save()  # Save the entry and trigger CTQ freezing
 
         self.inspection.refresh_from_db()
         self.assertEqual(self.inspection.status, "FROZEN")
+
+
+
+    def test_submit_for_review(self):
+        entry = InspectionEntry(
+            inspection=self.inspection,
+            inspection_field=self.field,
+            gauge=self.gauge,
+            measured_value=Decimal("25.000"),
+    )
+        entry.save()
+
+        self.inspection.submit_for_review()
+        self.assertEqual(self.inspection.status, "PENDING_REVIEW")
+
+
+    def test_approve_inspection(self):
+       self.inspection.status = "PENDING_REVIEW"
+       self.inspection.save()
+
+       self.inspection.approve()
+       self.assertEqual(self.inspection.status, "APPROVED")
+
+
+    def test_reject_inspection(self):
+        self.inspection.status = "PENDING_REVIEW"
+        self.inspection.save()
+
+        self.inspection.reject()
+        self.assertEqual(self.inspection.status, "REJECTED")
+
+    def test_cannot_add_entry_after_submission(self):
+        from django.core.exceptions import ValidationError
+
+        self.inspection.status = "PENDING_REVIEW"
+        self.inspection.save()
+
+        entry = InspectionEntry(
+            inspection=self.inspection,
+            inspection_field=self.field,
+            gauge=self.gauge,
+            measured_value=Decimal("25.000"),
+    )
+
+        with self.assertRaises(ValidationError):
+            entry.save()

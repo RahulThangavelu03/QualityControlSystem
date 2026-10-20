@@ -47,6 +47,73 @@ class Inspection(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
 
+    inspector = models.ForeignKey(
+    "auth.User",
+    on_delete=models.PROTECT,
+    null=True,
+    blank=True,
+
+)
+
+    reviewed_by = models.ForeignKey(
+    "auth.User",
+    on_delete=models.PROTECT,
+    null=True,
+    blank=True,
+    related_name="reviewed_inspections",
+)
+
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
+
+    def submit_for_review(self):
+        from django.core.exceptions import ValidationError
+
+        if self.status != "IN_PROGRESS":
+            raise ValidationError("Only in-progress inspections can be submitted.")
+
+        if self.entries.count() == 0:
+            raise ValidationError("Cannot submit an inspection without entries.")
+
+        if self.entries.filter(passed__isnull=True).exists():
+            raise ValidationError("All inspection entries must be completed.")
+
+        if self.entries.filter(passed=False, inspection_field__is_ctq=True).exists():
+            raise ValidationError("Failed CTQ inspection cannot be submitted.")
+
+        self.status = "PENDING_REVIEW"
+        self.save(update_fields=["status"])
+
+
+    def approve(self,reviewer=None):
+        from django.core.exceptions import ValidationError
+        from django.utils import timezone
+
+
+         
+        if self.status != "PENDING_REVIEW":
+            raise ValidationError("Only pending inspections can be approved.")
+
+        self.status = "APPROVED"
+        self.reviewed_by = reviewer
+        self.reviewed_at = timezone.now()
+        self.save(update_fields=["status", "reviewed_by", "reviewed_at"])
+
+
+
+    
+    def reject(self, reviewer=None):
+        from django.core.exceptions import ValidationError
+        from django.utils import timezone
+
+        if self.status != "PENDING_REVIEW":
+            raise ValidationError("Only pending inspections can be rejected.")
+
+        self.status = "REJECTED"
+        self.reviewed_by = reviewer
+        self.reviewed_at = timezone.now()
+        self.save(update_fields=["status", "reviewed_by", "reviewed_at"])
+
 
 
 class InspectionTemplate(models.Model):
@@ -107,8 +174,12 @@ class InspectionEntry(models.Model):
     def clean(self):
         from django.core.exceptions import ValidationError
 
-        if self.inspection.status == "FROZEN":
-            raise ValidationError("Inspection is frozen. No further entries allowed.")
+       
+
+        if self.inspection.status != "IN_PROGRESS":
+          raise ValidationError(
+        "Inspection entries cannot be changed after submission."
+    )
 
         if self.gauge.is_expired():
                raise ValidationError("Expired Tool Calibration")
@@ -124,6 +195,25 @@ class InspectionEntry(models.Model):
             else:
               self.passed = True
     
-        if field.is_ctq and self.passed is False:
-            self.inspection.status = 'FROZEN'
-            self.inspection.save(update_fields=['status'])
+        
+
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+
+        field = self.inspection_field
+
+        if field.field_type == "DIMENSION":
+            self.passed = (
+            field.lower_limit
+            <= self.measured_value
+            <= field.upper_limit
+        )
+
+        failed_ctq = field.is_ctq and self.passed is False
+
+        super().save(*args, **kwargs)
+
+        if failed_ctq:
+            self.inspection.status = "FROZEN"
+            self.inspection.save(update_fields=["status"])
